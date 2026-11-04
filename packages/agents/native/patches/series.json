@@ -179,7 +179,15 @@
     {
       "path": "0045-protect-reverse-local-bind-aliases.patch",
       "sha256": "1eb99a3ac7386544dcfc83df9977e88050dfdf5bc45011acf61405d6fa10174f"
+    },
+    {
+      "path": "0046-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0047-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
     }
   ],
-  "result_tree": "fe0e93b9ae9648276e13de3fcc90369b0ab47993"
+  "result_tree": "b0748a60f07b3e6e568587bfb2e425884793173d"
 }
