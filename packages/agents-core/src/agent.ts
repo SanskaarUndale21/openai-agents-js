@@ -142,6 +142,10 @@ export type AgentToolOptions<
    * A function that extracts the output text from the agent. By default, runs with output
    * guardrail results or a handled error use the final output, including an empty string.
    * Other runs prefer text from the latest model response, falling back to the final output.
+   *
+   * The extractor is only called for completed nested runs. When the nested run pauses for
+   * approval, the extractor is skipped and the interruptions are surfaced on the parent run;
+   * it runs once the nested run completes after resuming.
    */
   customOutputExtractor?: (
     output: CompletedAgentToolInvocationRunResult<TContext, TAgent>,
@@ -1039,13 +1043,24 @@ export class Agent<
               `You're passing the agent (name: ${this.name}) with toolUseBehavior.stopAtToolNames configured as a tool to a different agent; this may not work as you expect. You may want to have a wrapper function tool to consistently return the final output.`,
             );
           }
+          if ((completedResult.interruptions?.length ?? 0) > 0) {
+            // A paused nested run has no final output yet. Record it before any
+            // user code runs so the parent always surfaces the nested
+            // interruptions, and keep the extractor limited to completed runs.
+            if (details?.toolCall) {
+              saveAgentToolRunResult(
+                details.toolCall,
+                completedResultWithAgentToolInvocation,
+              );
+            }
+            return '';
+          }
+
           let outputText: string;
           if (typeof customOutputExtractor === 'function') {
             outputText = await customOutputExtractor(
               completedResultWithAgentToolInvocation,
             );
-          } else if ((completedResult.interruptions?.length ?? 0) > 0) {
-            outputText = '';
           } else {
             const outputGuardrailResult =
               completedResult.outputGuardrailResults?.at(-1);

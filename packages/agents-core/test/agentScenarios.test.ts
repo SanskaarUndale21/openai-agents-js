@@ -869,6 +869,124 @@ describe('Agent scenarios (examples and docs patterns)', () => {
   });
 
   it.each([
+    ['non-streaming', false],
+    ['streaming', true],
+  ] as const)(
+    'defers customOutputExtractor until a paused nested run completes (%s)',
+    async (_label, stream) => {
+      const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      const execute = vi.fn(
+        async ({ amount }: { amount: number }) => `refunded ${amount}`,
+      );
+      const issueRefund = tool({
+        name: 'issue_refund',
+        description: 'Issue a refund',
+        parameters: z.object({ amount: z.number() }),
+        needsApproval: true,
+        execute,
+      });
+
+      const nestedModel = new RecordingModel();
+      nestedModel.addMultipleTurnOutputs([
+        [
+          functionToolCall(
+            'issue_refund',
+            JSON.stringify({ amount: 500 }),
+            'inner-call',
+          ),
+        ],
+        [textMessage(JSON.stringify({ summary: 'refund issued' }))],
+      ]);
+      const billing = new Agent({
+        name: 'Billing',
+        model: nestedModel,
+        tools: [issueRefund],
+        outputType: z.object({ summary: z.string() }),
+      });
+
+      // Reads finalOutput without guarding, which throws on a paused run.
+      const customOutputExtractor = vi.fn(
+        (result: { finalOutput: { summary: string } }) =>
+          result.finalOutput.summary.toUpperCase(),
+      );
+      const billingTool = billing.asTool({
+        toolName: 'billing',
+        toolDescription: 'Billing specialist',
+        customOutputExtractor,
+        onStream: stream ? () => {} : undefined,
+      });
+
+      const outerModel = new RecordingModel();
+      outerModel.addMultipleTurnOutputs([
+        [
+          functionToolCall(
+            'billing',
+            JSON.stringify({ input: 'refund order 42' }),
+            'outer-call',
+          ),
+        ],
+        [textMessage('Outer done')],
+      ]);
+      const triage = new Agent({
+        name: 'Triage',
+        model: outerModel,
+        tools: [billingTool],
+      });
+
+      const runner = new Runner({ tracingDisabled: true });
+      const runOnce = async (input: string | RunState<any, any>) => {
+        if (!stream) {
+          return runner.run(triage, input);
+        }
+        const streamed = await runner.run(triage, input, { stream: true });
+        await streamed.completed;
+        return streamed;
+      };
+
+      const first = await runOnce('refund my order');
+
+      expect(first.interruptions).toHaveLength(1);
+      expect(first.interruptions[0]?.agent.name).toBe('Billing');
+      expect(first.interruptions[0]?.name).toBe('issue_refund');
+      expect(customOutputExtractor).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(outerModel.calls).toHaveLength(1);
+      expect(
+        first.newItems.filter((item) => item.type === 'tool_call_output_item'),
+      ).toEqual([]);
+      expect(first.state.hasPendingAgentToolRun('billing', 'outer-call')).toBe(
+        true,
+      );
+
+      const restored = await RunState.fromString(
+        triage,
+        first.state.toString(),
+      );
+      restored.approve(restored.getInterruptions()[0]!);
+      const resumed = await runOnce(restored);
+
+      expect(resumed.interruptions ?? []).toHaveLength(0);
+      expect(resumed.finalOutput).toBe('Outer done');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(customOutputExtractor).toHaveBeenCalledTimes(1);
+      expect(customOutputExtractor.mock.calls[0]?.[0].finalOutput).toEqual({
+        summary: 'refund issued',
+      });
+      expect(outerModel.lastTurnArgs?.input).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'function_call_result',
+            callId: 'outer-call',
+            output: { type: 'text', text: 'REFUND ISSUED' },
+          }),
+        ]),
+      );
+
+      warnSpy.mockRestore();
+    },
+  );
+
+  it.each([
     ['current schema after restoration', 'after restoration', false],
     ['legacy schema before serialization', 'before serialization', true],
     ['legacy schema after restoration', 'after restoration', true],
